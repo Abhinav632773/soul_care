@@ -3,13 +3,46 @@
 import { Card } from "@/components/ui/card";
 import { PhoneCall } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { getVapiClient } from "@/lib/vapi";
+
+const VAPI_AGENT_ID = process.env.NEXT_PUBLIC_VAPI_AGENT_ID;
 
 export default function CallPage() {
   const router = useRouter();
+  const [callActive, setCallActive] = useState(false);
+  const [callStatus, setCallStatus] = useState('idle');
+  const [error, setError] = useState(null);
 
-  const startCall = () => {
-    // Placeholder for actual call logic
-    alert('Call started!');
+  const startCall = async () => {
+    setError(null);
+    try {
+      const vapi = getVapiClient();
+      if (!vapi) {
+        setError('Vapi client not initialized.');
+        return;
+      }
+      setCallStatus('connecting');
+      await vapi.start({ assistant: VAPI_AGENT_ID });
+      setCallActive(true);
+      setCallStatus('in-call');
+    } catch (err) {
+      setError('Failed to start call: ' + err.message);
+      setCallStatus('idle');
+    }
+  };
+
+  const endCall = async () => {
+    try {
+      const vapi = getVapiClient();
+      if (vapi) {
+        await vapi.stop();
+      }
+      setCallActive(false);
+      setCallStatus('idle');
+    } catch (err) {
+      setError('Failed to end call: ' + err.message);
+    }
   };
 
   return (
@@ -25,12 +58,26 @@ export default function CallPage() {
         <PhoneCall className="w-12 h-12 text-green-400 mb-4 animate-pulse" />
         <p className="text-xl font-semibold mb-2 text-white">Ready to talk?</p>
         <p className="text-white/70 mb-6 text-center">Click below to start your call session and connect with a caring listener.</p>
-        <button
-          onClick={startCall}
-          className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-full shadow-lg transition-colors duration-200 text-lg"
-        >
-          Start Call
-        </button>
+        {error && <p className="text-red-400 mb-2">{error}</p>}
+        {callActive ? (
+          <>
+            <p className="text-green-400 font-semibold mb-4">In Call</p>
+            <button
+              onClick={endCall}
+              className="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-full shadow-lg transition-colors duration-200 text-lg"
+            >
+              End Call
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={startCall}
+            className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-full shadow-lg transition-colors duration-200 text-lg"
+            disabled={callStatus === 'connecting'}
+          >
+            {callStatus === 'connecting' ? 'Connecting...' : 'Start Call'}
+          </button>
+        )}
       </Card>
     </div>
   );
