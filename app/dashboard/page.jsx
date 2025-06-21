@@ -14,9 +14,54 @@ import {
   ArrowLeft
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
+import { useEffect, useState } from "react";
+import { collection, query, where, orderBy, getDocs } from "firebase/firestore";
+import { db } from "@/lib/firebase";
+import { Line } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { userProfile, loading } = useAuth();
+  const [moodCheckins, setMoodCheckins] = useState([]);
+  const [moodLoading, setMoodLoading] = useState(true);
+
+  useEffect(() => {
+    if (!userProfile?.uid) return;
+    setMoodLoading(true);
+    const fetchMoodCheckins = async () => {
+      const q = query(
+        collection(db, "mood_checkins"),
+        where("userId", "==", userProfile.uid),
+        orderBy("timestamp", "desc")
+      );
+      const snapshot = await getDocs(q);
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setMoodCheckins(data);
+      setMoodLoading(false);
+    };
+    fetchMoodCheckins();
+  }, [userProfile?.uid]);
+
+  if (loading || !userProfile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#1e1e1e] via-[#252526] to-[#000000] text-white">
+        <span className="text-lg">Loading...</span>
+      </div>
+    );
+  }
 
   const navigateBack = () => {
     router.push('/');
@@ -24,6 +69,59 @@ export default function DashboardPage() {
 
   const startCall = () => {
     router.push('/call');
+  };
+
+  // Prepare mood trend data for the last 7 days
+  const today = new Date();
+  const last7DaysRaw = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(today);
+    d.setDate(today.getDate() - (6 - i));
+    return d;
+  });
+  const last7Days = last7DaysRaw.map(d => d.toISOString().slice(0, 10));
+  const last7DaysLabels = last7DaysRaw.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+
+  const moodByDate = {};
+  moodCheckins.forEach((mood) => {
+    if (mood.date && last7Days.includes(mood.date)) {
+      // If multiple check-ins per day, take the latest
+      moodByDate[mood.date] = mood.mood_rating;
+    }
+  });
+
+  const chartData = {
+    labels: last7DaysLabels,
+    datasets: [
+      {
+        label: 'Mood Rating',
+        data: last7Days.map((date) => moodByDate[date] ?? null),
+        borderColor: 'rgb(34,197,94)',
+        backgroundColor: 'rgba(34,197,94,0.2)',
+        tension: 0.3,
+        spanGaps: true,
+      },
+    ],
+  };
+
+  const chartOptions = {
+    responsive: true,
+    plugins: {
+      legend: { display: false },
+      title: { display: true, text: 'Mood Trend (Last 7 Days)', color: '#fff', font: { size: 18 } },
+      tooltip: { enabled: true },
+    },
+    scales: {
+      x: {
+        ticks: { color: '#fff' },
+        grid: { color: 'rgba(255,255,255,0.1)' },
+      },
+      y: {
+        min: 1,
+        max: 10,
+        ticks: { color: '#fff', stepSize: 1 },
+        grid: { color: 'rgba(255,255,255,0.1)' },
+      },
+    },
   };
 
   return (
@@ -40,8 +138,38 @@ export default function DashboardPage() {
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">Dashboard</h1>
         </div>
         <div className="text-sm text-white/60">
-          Welcome back, User
+          Welcome back, {userProfile.username}
         </div>
+      </div>
+
+      {/* Mood Check-ins */}
+      <div className="mb-8">
+        <h2 className="text-xl font-bold mb-2">Mood Check-ins</h2>
+        {moodLoading ? (
+          <p>Loading mood data...</p>
+        ) : moodCheckins.length === 0 ? (
+          <p>No mood check-ins yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {moodCheckins.map((mood) => (
+              <div key={mood.id} className="bg-white/10 border border-white/20 rounded-lg p-3 flex flex-col md:flex-row md:items-center md:justify-between">
+                <div>
+                  <span className="font-semibold text-white">{mood.date} ({mood.time_of_day})</span>
+                  <span className="ml-2 text-white/80">Mood: {mood.mood_rating}</span>
+                  {mood.mood_reason && <span className="ml-2 text-white/60 italic">({mood.mood_reason})</span>}
+                </div>
+                <div className="text-xs text-white/60 mt-2 md:mt-0">
+                  Energy: {mood.energy_level} | Sleep: {mood.sleep_quality} | Stress: {mood.stress_level}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Mood Trend Line Chart */}
+      <div className="mb-8">
+        <Line data={chartData} options={chartOptions} />
       </div>
 
       {/* Stats Grid */}

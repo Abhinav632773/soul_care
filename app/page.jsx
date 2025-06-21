@@ -4,51 +4,40 @@ import Cardcomponent from "@/components/cardcomponent";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LayoutDashboard, MessageCircle, Phone, X, Send, Heart, Reply } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, updateDoc, doc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { db,app } from '@/lib/firebase';
+import { getAuth, setPersistence, browserSessionPersistence } from "firebase/auth";
+
+const auth = getAuth(app);
+
+setPersistence(auth, browserSessionPersistence)
+  .then(() => {
+    // Now all sign-in methods will only persist for the session
+  })
+  .catch((error) => {
+    // Handle errors here
+    console.error(error);
+  });
 
 export default function Home() {
   const router = useRouter();
+  const { user, loading } = useAuth();
   const [isChatOpen, setIsChatOpen] = useState(false);
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      text: "Hey everyone! How's your day going? 💛",
-      sender: "Sarah",
-      timestamp: "2:30 PM",
-      likes: 3,
-      isLiked: false,
-      replies: []
-    },
-    {
-      id: 2,
-      text: "Feeling a bit overwhelmed today, but trying to stay positive!",
-      sender: "Mike",
-      timestamp: "2:32 PM",
-      likes: 5,
-      isLiked: true,
-      replies: []
-    },
-    {
-      id: 3,
-      text: "You're doing great, Mike! Remember to take deep breaths 🌸",
-      sender: "Emma",
-      timestamp: "2:35 PM",
-      likes: 2,
-      isLiked: false,
-      replies: []
-    },
-    {
-      id: 4,
-      text: "Thanks Emma! That really helps ❤️",
-      sender: "Mike",
-      timestamp: "2:36 PM",
-      likes: 4,
-      isLiked: false,
-      replies: []
-    }
-  ]);
+  const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
   const [replyTo, setReplyTo] = useState(null);
+  const [chatLoading, setChatLoading] = useState(true);
+
+  // Protect the home page
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace('/sign-up');
+    }
+  }, [user, loading, router]);
+
+  if (loading || !user) return null; // Optionally show a spinner
 
   const navigateToDashboard = () => {
     router.push('/dashboard');
@@ -62,29 +51,52 @@ export default function Home() {
     setIsChatOpen(!isChatOpen);
   };
 
-  const sendMessage = () => {
-    if (newMessage.trim()) {
-      const message = {
-        id: Date.now(),
+  // Real-time Firestore chat listener
+  useEffect(() => {
+    if (!isChatOpen) return;
+    setChatLoading(true);
+    const q = query(collection(db, 'messages'), orderBy('timestamp', 'asc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setMessages(msgs);
+      setChatLoading(false);
+    });
+    return unsubscribe;
+  }, [isChatOpen]);
+
+  const sendMessage = async () => {
+    if (!newMessage.trim()) return;
+    try {
+      await addDoc(collection(db, 'messages'), {
         text: newMessage,
-        sender: "You",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sender: user.username || user.email,
+        senderId: user.uid,
+        timestamp: serverTimestamp(),
         likes: 0,
-        isLiked: false,
-        replies: []
-      };
-      setMessages([...messages, message]);
+        likedBy: [],
+        replyTo: replyTo ? replyTo.id : null,
+        replyToText: replyTo ? replyTo.text : null,
+        replyToSender: replyTo ? (replyTo.senderId === user.uid ? `${user.username} (you)` : replyTo.sender) : null,
+      });
       setNewMessage("");
       setReplyTo(null);
+    } catch (err) {
+      alert('Failed to send message: ' + err.message);
     }
   };
-
-  const toggleLike = (messageId) => {
-    setMessages(messages.map(msg => 
-      msg.id === messageId 
-        ? { ...msg, likes: msg.isLiked ? msg.likes - 1 : msg.likes + 1, isLiked: !msg.isLiked }
-        : msg
-    ));
+//toggle like function which also stores the likedBy and likes in the database
+  const toggleLike = async (message) => {
+    if (!user) return;
+    const messageRef = doc(db, 'messages', message.id);
+    const isLiked = message.likedBy?.includes(user.uid);
+    try {
+      await updateDoc(messageRef, {
+        likes: isLiked ? message.likes - 1 : message.likes + 1,
+        likedBy: isLiked ? arrayRemove(user.uid) : arrayUnion(user.uid),
+      });
+    } catch (err) {
+      alert('Failed to like message: ' + err.message);
+    }
   };
 
   const handleDoubleClick = (message) => {
@@ -171,19 +183,32 @@ export default function Home() {
                     onDoubleClick={() => handleDoubleClick(message)}
                   >
                     <div className="flex items-start justify-between mb-2">
-                      <span className="text-sm font-medium text-white">{message.sender}</span>
-                      <span className="text-xs text-white/60">{message.timestamp}</span>
+                      <span className="text-sm font-medium text-white">
+                        {message.senderId === user.uid ? `${user.username} (you)` : message.sender}
+                      </span>
+                      <span className="text-xs text-white/60">
+                        {message.timestamp
+                          ? (message.timestamp.seconds
+                              ? new Date(message.timestamp.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                              : message.timestamp) // fallback for string
+                          : ''}
+                      </span>
                     </div>
+                    {message.replyTo && message.replyToText && (
+                      <div className="mb-2 p-2 rounded bg-white/5 border-l-4 border-blue-400 text-xs text-white/80">
+                        <span className="font-semibold">{message.replyToSender || 'Replied message'}:</span> {message.replyToText}
+                      </div>
+                    )}
                     <p className="text-white/90 mb-2">{message.text}</p>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-2">
                         <button 
-                          onClick={() => toggleLike(message.id)}
+                          onClick={() => toggleLike(message)}
                           className={`flex items-center space-x-1 text-xs transition-colors ${
-                            message.isLiked ? 'text-red-400' : 'text-white/60 hover:text-red-400'
+                            message.likedBy?.includes(user.uid) ? 'text-red-400' : 'text-white/60 hover:text-red-400'
                           }`}
                         >
-                          <Heart className={`w-3 h-3 ${message.isLiked ? 'fill-current' : ''}`} />
+                          <Heart className={`w-3 h-3 ${message.likedBy?.includes(user.uid) ? 'fill-current' : ''}`} />
                           <span>{message.likes}</span>
                         </button>
                         <button 
